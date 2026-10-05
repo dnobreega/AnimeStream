@@ -1,0 +1,13 @@
+<?php
+require __DIR__.'/../includes/bootstrap.php'; require_admin();
+$id=(int)($_GET['id']??$_POST['id']??0); $season=$id?find_season($id):null; $errors=[]; $animes=all_animes();
+if($_SERVER['REQUEST_METHOD']==='POST'){
+    $animeId=(int)($_POST['anime_id']??0); $numero=(int)($_POST['numero']??1); $titulo=trim((string)($_POST['titulo']??'')); $descricao=trim((string)($_POST['descricao']??''));
+    if(!verify_csrf($_POST['csrf']??null)) $errors[]='Formulário inválido.'; if(!$animeId) $errors[]='Selecione um anime.'; if($numero<1) $errors[]='Número inválido.'; if($titulo==='') $errors[]='Informe o título.';
+    $check=db()->prepare('SELECT id FROM temporadas WHERE anime_id=? AND numero=? AND id<>? LIMIT 1'); $check->execute([$animeId,$numero,$id]); if($check->fetch()) $errors[]='Esta temporada já existe para esse anime.';
+    if(!$errors){ if($id&&$season){ db()->prepare('UPDATE temporadas SET anime_id=?,numero=?,titulo=?,descricao=? WHERE id=?')->execute([$animeId,$numero,$titulo,$descricao,$id]); flash('success','Temporada atualizada.'); } else { db()->prepare('INSERT INTO temporadas(anime_id,numero,titulo,descricao) VALUES(?,?,?,?)')->execute([$animeId,$numero,$titulo,$descricao]); flash('success','Temporada criada.'); } redirect('admin/temporadas.php'); }
+} elseif($season){ $_POST=$season; }
+$pageTitle=$id?'Editar temporada':'Nova temporada'; require __DIR__.'/../includes/admin_header.php';
+?>
+<main class="section container admin-page"><div class="form-card reveal"><span class="section-kicker">TEMPORADA</span><h1><?= $id?'Editar temporada':'Nova temporada' ?></h1><?php foreach($errors as $er): ?><div class="alert error"><?= e($er) ?></div><?php endforeach; ?><form method="post" class="form-grid"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="id" value="<?= $id ?>"><label>Anime<select name="anime_id" required><option value="">Selecione</option><?php foreach($animes as $a): ?><option value="<?= (int)$a['id'] ?>" <?= ((int)($_POST['anime_id']??0)===(int)$a['id'])?'selected':'' ?>><?= e($a['titulo']) ?></option><?php endforeach; ?></select></label><label>Número<input type="number" min="1" name="numero" required value="<?= e((string)($_POST['numero']??1)) ?>"></label><label class="full">Título<input name="titulo" required value="<?= e($_POST['titulo']??'Temporada 1') ?>"></label><label class="full">Descrição<textarea name="descricao" rows="4"><?= e($_POST['descricao']??'') ?></textarea></label><div class="form-actions full"><a class="btn btn-ghost" href="<?= e(url('admin/temporadas.php')) ?>">Cancelar</a><button class="btn btn-primary">Salvar temporada</button></div></form></div></main>
+<?php require __DIR__.'/../includes/admin_footer.php'; ?>

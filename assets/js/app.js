@@ -1,0 +1,1104 @@
+const $=(s,r=document)=>r.querySelector(s);const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+function initMenu(){const b=$('#menuToggle'),n=$('#mainNav');if(!b||!n)return;b.addEventListener('click',()=>n.classList.toggle('open'));}
+function initReveal(){const els=$$('.reveal');if(!('IntersectionObserver' in window)){els.forEach(e=>e.classList.add('visible'));return;}const o=new IntersectionObserver(es=>es.forEach(e=>{if(!e.isIntersecting)return;e.target.classList.add('visible');o.unobserve(e.target)}),{threshold:.08});els.forEach(e=>o.observe(e));}
+function initParticles(){const c=$('#particles');if(!c)return;const x=c.getContext('2d');let w=0,h=0,p=[];function resize(){w=c.width=innerWidth;h=c.height=innerHeight;p=Array.from({length:Math.min(80,Math.floor(w*h/22000))},()=>({x:Math.random()*w,y:Math.random()*h,r:.5+Math.random()*1.4,v:.1+Math.random()*.35,a:.15+Math.random()*.35}))}function tick(){x.clearRect(0,0,w,h);for(const z of p){z.y-=z.v;if(z.y<0){z.y=h;z.x=Math.random()*w}x.globalAlpha=z.a;x.fillStyle='#b9c5d8';x.beginPath();x.arc(z.x,z.y,z.r,0,Math.PI*2);x.fill()}requestAnimationFrame(tick)}resize();addEventListener('resize',resize);tick();}
+function initPlayer(){
+    const v = $('#videoPlayer');
+    const ytRoot = $('#youtubePlayer');
+    if(!v && !ytRoot) return;
+
+    const wrap = $('#playerWrap');
+    const playBtn = $('#playerCenterPlay');
+    const loading = $('#playerLoading');
+    const errorBox = $('#playerErrorMessage');
+    const base = (document.documentElement.dataset.baseUrl || '').replace(/\/$/, '');
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+    const hideLoading = () => { if(loading) loading.hidden = true; };
+    const showLoading = () => {
+        if(loading) loading.hidden = false;
+        if(errorBox) errorBox.hidden = true;
+        wrap?.classList.remove('player-error');
+    };
+    const showError = (message='Não foi possível carregar este vídeo.') => {
+        hideLoading();
+        if(errorBox){ errorBox.textContent = message; errorBox.hidden = false; }
+        wrap?.classList.add('player-error');
+    };
+
+    // ---------- MP4 / HLS ----------
+    if(v){
+        const src = (v.dataset.src || v.getAttribute('src') || '').trim();
+        const type = (v.dataset.type || 'mp4').toLowerCase();
+        const episodeId = v.dataset.episodeId || '';
+        const savedTime = parseFloat(v.dataset.savedTime || '0') || 0;
+        const isHls = type === 'hls' || /\.m3u8(?:$|\?)/i.test(src);
+        let hlsInstance = null;
+        let lastSaved = -1;
+
+        const updatePlayButton = () => {
+            const paused = v.paused || v.ended;
+            wrap?.classList.toggle('is-playing', !paused);
+            if(playBtn){
+                playBtn.hidden = !paused;
+                playBtn.setAttribute('aria-label', v.ended ? 'Reproduzir novamente' : 'Reproduzir vídeo');
+            }
+        };
+        const saveProgress = (force=false) => {
+            if(!episodeId || !Number.isFinite(v.currentTime) || !Number.isFinite(v.duration) || v.duration <= 0) return;
+            if(!force && lastSaved >= 0 && Math.abs(v.currentTime-lastSaved)<3.5) return;
+            lastSaved=v.currentTime;
+            const body=new URLSearchParams({episode_id:String(episodeId),current_time:String(v.currentTime),duration:String(v.duration),csrf});
+            fetch(`${base}/api/progress.php`,{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','X-CSRF-TOKEN':csrf,'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString(),keepalive:true}).catch(()=>{});
+        };
+        const resume=()=>{
+            if(savedTime<=3 || !Number.isFinite(v.duration) || v.duration<=0) return;
+            const target=Math.min(savedTime,Math.max(0,v.duration-2));
+            if(target>3 && target<v.duration-1){try{v.currentTime=target;}catch(_) {}}
+        };
+        const play=()=>{
+            if(v.ended) v.currentTime=0;
+            const p=v.play();
+            if(p?.catch) p.catch(()=>showError('O navegador bloqueou a reprodução automática. Clique novamente em Play.'));
+        };
+        const toggle=()=>{if(v.paused||v.ended) play(); else v.pause();};
+
+        v.addEventListener('loadstart',showLoading);
+        v.addEventListener('waiting',showLoading);
+        v.addEventListener('stalled',showLoading);
+        v.addEventListener('loadedmetadata',()=>{hideLoading();resume();updatePlayButton();});
+        ['loadeddata','canplay','canplaythrough','playing','play','pause','ended'].forEach(ev=>v.addEventListener(ev,()=>{hideLoading();updatePlayButton();}));
+        v.addEventListener('pause',()=>saveProgress(true));
+        v.addEventListener('ended',()=>saveProgress(true));
+        v.addEventListener('timeupdate',()=>saveProgress(false));
+        v.addEventListener('error',()=>showError(v.error?.code===MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED?'Formato de vídeo não suportado ou arquivo não encontrado.':'Não foi possível carregar este vídeo.'));
+        playBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();play();});
+        v.addEventListener('click',toggle);
+        document.addEventListener('keydown',e=>{
+            const tag=document.activeElement?.tagName?.toLowerCase();
+            if(['input','textarea','select'].includes(tag)||document.activeElement?.isContentEditable) return;
+            if(e.code==='Space'||e.key.toLowerCase()==='k'){e.preventDefault();toggle();}
+        });
+        v.addEventListener('dblclick',async()=>{try{if(document.fullscreenElement) await document.exitFullscreen();else if(wrap?.requestFullscreen) await wrap.requestFullscreen();}catch(_) {}});
+        window.addEventListener('pagehide',()=>saveProgress(true));
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')saveProgress(true);});
+
+        showLoading();
+        if(isHls){
+            if(window.Hls&&Hls.isSupported()){
+                hlsInstance=new Hls({enableWorker:true,lowLatencyMode:false});
+                hlsInstance.on(Hls.Events.MANIFEST_PARSED,()=>{hideLoading();updatePlayButton();resume();});
+                hlsInstance.on(Hls.Events.ERROR,(_,data)=>{if(data?.fatal){try{hlsInstance.destroy();}catch(_){}showError('Não foi possível carregar o stream HLS.');}});
+                hlsInstance.loadSource(src);hlsInstance.attachMedia(v);
+            }else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src;v.load();}
+            else showError('Seu navegador não suporta este vídeo HLS.');
+        }else if(src){
+            if(v.getAttribute('src')!==src) v.src=src;
+            v.load();
+        }else showError('Nenhum vídeo foi cadastrado para este episódio.');
+        updatePlayButton();
+        return;
+    }
+
+    // ---------- YouTube ----------
+    const videoId = ytRoot.dataset.youtubeId || '';
+    const episodeId = ytRoot.dataset.episodeId || '';
+    const savedTime = parseFloat(ytRoot.dataset.savedTime || '0') || 0;
+    const iframeOrigin = ytRoot.dataset.origin || window.location.origin;
+    if(!videoId){ showError('ID do YouTube inválido.'); return; }
+
+    let ytPlayer = null;
+    let ready = false;
+    let lastSaved = -1;
+    let saveTimer = null;
+    let localPlaying = false;
+
+    // O iframe já está carregado diretamente. Assim, se a API do YouTube demorar
+    // ou estiver indisponível, o player nativo continua funcionando normalmente.
+    ytRoot.addEventListener('load',()=>{ setTimeout(hideLoading,250); },{once:true});
+    showLoading();
+    setTimeout(()=>{if(!ready) hideLoading();},3500);
+
+    const sendYTCommand = (func, args=[]) => {
+        try{
+            ytRoot.contentWindow?.postMessage(JSON.stringify({event:'command',func,args}), 'https://www.youtube.com');
+        }catch(_) {}
+    };
+
+    const updateYTButton = () => {
+        if(!playBtn) return;
+        playBtn.hidden = localPlaying;
+        wrap?.classList.toggle('is-playing', localPlaying);
+        playBtn.setAttribute('aria-label', localPlaying ? 'Pausar vídeo' : 'Reproduzir vídeo');
+    };
+
+    const saveYTProgress = (force=false) => {
+        if(!episodeId || !ytPlayer || !ready) return;
+        let current=0,duration=0;
+        try{current=Number(ytPlayer.getCurrentTime());duration=Number(ytPlayer.getDuration());}catch(_){return;}
+        if(!Number.isFinite(current)||!Number.isFinite(duration)||duration<=0) return;
+        if(!force && lastSaved>=0 && Math.abs(current-lastSaved)<3.5) return;
+        lastSaved=current;
+        const body=new URLSearchParams({episode_id:String(episodeId),current_time:String(current),duration:String(duration),csrf});
+        fetch(`${base}/api/progress.php`,{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','X-CSRF-TOKEN':csrf,'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString(),keepalive:true}).catch(()=>{});
+    };
+
+    const resumeYT = () => {
+        if(savedTime<=3 || !ytPlayer || !ready) return;
+        let duration=0;
+        try{duration=Number(ytPlayer.getDuration());}catch(_){return;}
+        if(duration>0){
+            const target=Math.min(savedTime,Math.max(0,duration-2));
+            if(target>3 && target<duration-1){try{ytPlayer.seekTo(target,true);}catch(_) {}}
+        }
+    };
+
+    const loadApi = () => new Promise(resolve=>{
+        if(window.YT?.Player){resolve();return;}
+        const previous=window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady=()=>{try{previous?.();}catch(_){} resolve();};
+        const existing=document.querySelector('script[data-youtube-api]');
+        if(existing) return;
+        const script=document.createElement('script');
+        script.src='https://www.youtube.com/iframe_api';
+        script.async=true;
+        script.dataset.youtubeApi='1';
+        script.onerror=()=>resolve();
+        document.head.appendChild(script);
+    });
+
+    loadApi().then(()=>{
+        if(!window.YT?.Player) return;
+        try{
+            ytPlayer=new YT.Player(ytRoot,{
+                events:{
+                    onReady:()=>{ready=true;hideLoading();resumeYT();updateYTButton();saveTimer=setInterval(()=>saveYTProgress(false),10000);},
+                    onStateChange:(event)=>{
+                        const state=event.data;
+                        localPlaying=state===YT.PlayerState.PLAYING;
+                        updateYTButton();
+                        if(state===YT.PlayerState.PLAYING){hideLoading();if(errorBox)errorBox.hidden=true;wrap?.classList.remove('player-error');}
+                        else if(state===YT.PlayerState.BUFFERING){showLoading();}
+                        else {hideLoading();if(state===YT.PlayerState.PAUSED||state===YT.PlayerState.ENDED)saveYTProgress(true);}
+                    },
+                    onError:(event)=>{
+                        const messages={2:'O ID do YouTube é inválido.',5:'O player do YouTube não conseguiu carregar o vídeo.',100:'Este vídeo não está disponível ou foi removido.',101:'Este vídeo não permite reprodução incorporada.',150:'Este vídeo não permite reprodução incorporada.'};
+                        showError(messages[event.data]||'O YouTube não permitiu carregar este vídeo.');
+                    }
+                }
+            });
+        }catch(_){
+            // O iframe nativo continua utilizável mesmo sem a API.
+        }
+    });
+
+    const playYT = () => {
+        localPlaying=true;
+        updateYTButton();
+        if(ytPlayer&&ready){try{ytPlayer.playVideo();return;}catch(_) {}}
+        sendYTCommand('playVideo');
+    };
+    const pauseYT = () => {
+        localPlaying=false;
+        updateYTButton();
+        if(ytPlayer&&ready){try{ytPlayer.pauseVideo();return;}catch(_) {}}
+        sendYTCommand('pauseVideo');
+    };
+    const toggleYT = () => {
+        if(ytPlayer&&ready){
+            try{
+                const state=ytPlayer.getPlayerState();
+                if(state===YT.PlayerState.PLAYING) pauseYT(); else playYT();
+                return;
+            }catch(_) {}
+        }
+        if(localPlaying) pauseYT(); else playYT();
+    };
+
+    playBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();toggleYT();});
+    document.addEventListener('keydown',e=>{
+        const tag=document.activeElement?.tagName?.toLowerCase();
+        if(['input','textarea','select'].includes(tag)||document.activeElement?.isContentEditable) return;
+        if(e.code==='Space'||e.key.toLowerCase()==='k'){e.preventDefault();toggleYT();}
+    });
+    window.addEventListener('pagehide',()=>saveYTProgress(true));
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')saveYTProgress(true);});
+    window.addEventListener('beforeunload',()=>{if(saveTimer)clearInterval(saveTimer);});
+}
+
+function initEpisodePicker(){
+    const form=$('#episodePickerForm');
+    const select=$('#episodePickerSelect');
+    const search=$('#episodePickerSearch');
+    if(!form||!select)return;
+
+    function filterOptions(){
+        const q=(search?.value||'').trim().toLowerCase();
+        let visible=0;
+        [...select.options].forEach(option=>{
+            if(!option.value){option.hidden=false;return;}
+            const text=(option.dataset.search||option.textContent||'').toLowerCase();
+            const show=!q||text.includes(q);
+            option.hidden=!show;
+            if(show)visible++;
+        });
+
+        [...select.children].forEach(group=>{
+            if(group.tagName!=='OPTGROUP')return;
+            const hasVisible=[...group.options].some(option=>!option.hidden);
+            group.hidden=!hasVisible;
+        });
+        select.dataset.visibleCount=String(visible);
+    }
+
+    search?.addEventListener('input',filterOptions);
+
+    form.addEventListener('submit',event=>{
+        if(!select.value){
+            event.preventDefault();
+            select.focus();
+            select.classList.add('invalid');
+            setTimeout(()=>select.classList.remove('invalid'),700);
+        }
+    });
+
+    select.addEventListener('change',()=>select.classList.remove('invalid'));
+    filterOptions();
+}
+
+function initToast(){setTimeout(()=>$$('.toast').forEach(t=>{t.style.opacity='0';t.style.transform='translateY(-5px)';t.style.transition='.35s';setTimeout(()=>t.remove(),350)}),3800);}
+
+function initPasswordToggles(){
+    $$('.password-toggle').forEach(button=>{
+        button.addEventListener('click',()=>{
+            let targetId=button.dataset.target;
+            let input=targetId ? document.getElementById(targetId) : button.parentElement?.querySelector('input');
+            if(!input)return;
+            const show=input.type==='password';
+            input.type=show?'text':'password';
+            button.textContent=show?'Ocultar':'Mostrar';
+            button.setAttribute('aria-label',show?'Ocultar senha':'Mostrar senha');
+        });
+    });
+}
+
+function initSearch(){
+    const forms=$$('.global-search, .search-form-autocomplete');
+    if(!forms.length)return;
+    const base=(document.documentElement.dataset.baseUrl||'').replace(/\/$/,'');
+
+    forms.forEach(form=>{
+        const input=form.querySelector('input[type="search"]');
+        const box=form.querySelector('.search-suggestions');
+        if(!input||!box)return;
+
+        box.setAttribute('role','listbox');
+
+        let timer=null;
+        let controller=null;
+        let lastQuery='';
+        let activeIndex=-1;
+
+        function hide(){
+            box.hidden=true;
+            box.innerHTML='';
+            activeIndex=-1;
+            input.setAttribute('aria-expanded','false');
+            input.removeAttribute('aria-activedescendant');
+        }
+
+        function setExpanded(value){
+            input.setAttribute('aria-expanded',value?'true':'false');
+        }
+
+        function setActive(index){
+            const options=[...box.querySelectorAll('.search-suggestion')];
+            if(!options.length){activeIndex=-1;return;}
+            activeIndex=Math.max(-1,Math.min(index,options.length-1));
+
+            options.forEach((option,i)=>{
+                option.classList.toggle('active',i===activeIndex);
+                option.setAttribute('aria-selected',i===activeIndex?'true':'false');
+            });
+
+            if(activeIndex>=0){
+                const option=options[activeIndex];
+                if(!option.id){
+                    option.id=`search-suggestion-${Math.random().toString(36).slice(2,10)}`;
+                }
+                input.setAttribute('aria-activedescendant',option.id);
+                option.scrollIntoView({block:'nearest'});
+            }else{
+                input.removeAttribute('aria-activedescendant');
+            }
+        }
+
+        function item(row,index){
+            const link=document.createElement('a');
+            link.className='search-suggestion';
+            link.href=row.url;
+            link.id=`search-suggestion-${Date.now()}-${index}`;
+            link.setAttribute('role','option');
+            link.setAttribute('aria-selected','false');
+
+            const img=document.createElement('img');
+            img.src=row.poster;
+            img.alt='';
+            img.loading='lazy';
+
+            const copy=document.createElement('div');
+            const title=document.createElement('strong');
+            title.textContent=row.titulo;
+
+            const meta=document.createElement('small');
+            meta.textContent=[row.ano||'Anime',row.generos,row.estudio].filter(Boolean).join(' • ');
+
+            copy.append(title,meta);
+            link.append(img,copy);
+
+            link.addEventListener('mouseenter',()=>{
+                const options=[...box.querySelectorAll('.search-suggestion')];
+                setActive(options.indexOf(link));
+            });
+
+            link.addEventListener('focus',()=>{
+                const options=[...box.querySelectorAll('.search-suggestion')];
+                setActive(options.indexOf(link));
+            });
+
+            return link;
+        }
+
+        async function search(q){
+            q=q.trim();
+            if(q.length<2){hide();return;}
+
+            lastQuery=q;
+            if(controller)controller.abort();
+            controller=new AbortController();
+
+            try{
+                const response=await fetch(
+                    `${base}/api/search.php?q=${encodeURIComponent(q)}`,
+                    {headers:{'Accept':'application/json'},signal:controller.signal}
+                );
+
+                if(!response.ok)throw new Error('search');
+
+                const data=await response.json();
+
+                if(input.value.trim()!==lastQuery)return;
+
+                box.innerHTML='';
+                activeIndex=-1;
+
+                if(data.items?.length){
+                    data.items.forEach((row,index)=>box.appendChild(item(row,index)));
+
+                    const all=document.createElement('button');
+                    all.type='submit';
+                    all.className='search-suggestion-more';
+                    all.textContent=`Ver todos os resultados para “${q}”`;
+                    box.appendChild(all);
+
+                    box.hidden=false;
+                    setExpanded(true);
+                }else{
+                    const empty=document.createElement('div');
+                    empty.className='search-no-results';
+                    empty.innerHTML=`Nenhum anime encontrado para “${q}”.<br><small>Tente título, apelido, gênero, estúdio ou ano.</small>`;
+                    box.appendChild(empty);
+                    box.hidden=false;
+                    setExpanded(true);
+                }
+            }catch(error){
+                if(error.name!=='AbortError')hide();
+            }
+        }
+
+        input.addEventListener('input',()=>{
+            clearTimeout(timer);
+            timer=setTimeout(()=>search(input.value),160);
+        });
+
+        input.addEventListener('focus',()=>{
+            if(input.value.trim())search(input.value);
+        });
+
+        input.addEventListener('keydown',(event)=>{
+            const options=box.querySelectorAll('.search-suggestion');
+
+            if(event.key==='ArrowDown' && !box.hidden){
+                event.preventDefault();
+                setActive(activeIndex+1);
+                return;
+            }
+
+            if(event.key==='ArrowUp' && !box.hidden){
+                event.preventDefault();
+                setActive(activeIndex-1);
+                return;
+            }
+
+            if(event.key==='Enter' && activeIndex>=0 && options[activeIndex] && !box.hidden){
+                event.preventDefault();
+                options[activeIndex].click();
+                return;
+            }
+
+            if(event.key==='Escape')hide();
+        });
+
+        document.addEventListener('click',e=>{
+            if(!form.contains(e.target))hide();
+        });
+
+        form.addEventListener('submit',()=>hide());
+    });
+}
+
+
+function initProfilePhotoPreview(){
+    const input=document.querySelector('input[name="foto_perfil"]');
+    const inlinePreview=document.querySelector('#profilePhotoPreview');
+    const modal=document.querySelector('#photoConfirmModal');
+    const modalPreview=document.querySelector('#photoModalPreview');
+    const confirmBtn=document.querySelector('#photoModalConfirm');
+    const cancelBtn=document.querySelector('#photoModalCancel');
+    if(!input||!inlinePreview||!modal||!modalPreview||!confirmBtn)return;
+
+    let pendingDataUrl='';
+
+    function openModal(){
+        modal.hidden=false;
+        modal.setAttribute('aria-hidden','false');
+        document.body.classList.add('modal-open');
+    }
+    function closeModal(){
+        modal.hidden=true;
+        modal.setAttribute('aria-hidden','true');
+        document.body.classList.remove('modal-open');
+    }
+    function paintPreview(dataUrl){
+        modalPreview.innerHTML='';
+        const img=document.createElement('img');
+        img.src=dataUrl;
+        img.alt='Pré-visualização da nova foto de perfil';
+        modalPreview.appendChild(img);
+    }
+    function applyPreview(){
+        inlinePreview.innerHTML='';
+        const img=document.createElement('img');
+        img.className='avatar-image';
+        img.src=pendingDataUrl;
+        img.alt='Pré-visualização da nova foto de perfil';
+        inlinePreview.appendChild(img);
+        closeModal();
+    }
+
+    input.addEventListener('change',()=>{
+        const file=input.files?.[0];
+        if(!file){return;}
+        if(!/^image\/(jpeg|png|webp)$/.test(file.type)){
+            input.value='';
+            return;
+        }
+        if(file.size>2*1024*1024){
+            input.value='';
+            return;
+        }
+        const reader=new FileReader();
+        reader.onload=()=>{
+            pendingDataUrl=String(reader.result||'');
+            if(!pendingDataUrl)return;
+            paintPreview(pendingDataUrl);
+            openModal();
+        };
+        reader.readAsDataURL(file);
+    });
+
+    confirmBtn.addEventListener('click',applyPreview);
+    cancelBtn?.addEventListener('click',()=>{ input.value=''; pendingDataUrl=''; closeModal(); });
+    modal.querySelectorAll('[data-modal-close]').forEach(el=>el.addEventListener('click',()=>{ input.value=''; pendingDataUrl=''; closeModal(); }));
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden){input.value=''; pendingDataUrl=''; closeModal();}});
+}
+
+function initRemovePhotoModal(){
+    const button=document.querySelector('#removeCurrentPhotoBtn');
+    const modal=document.querySelector('#removePhotoConfirmModal');
+    const confirmBtn=document.querySelector('#removePhotoModalConfirm');
+    const form=button?.closest('form');
+    const hiddenInput=document.querySelector('#removePhotoInput');
+    const fileInput=document.querySelector('input[name="foto_perfil"]');
+    if(!button||!modal||!confirmBtn||!form||!hiddenInput)return;
+
+    function open(){
+        modal.hidden=false;
+        modal.setAttribute('aria-hidden','false');
+        document.body.classList.add('modal-open');
+        setTimeout(()=>confirmBtn.focus(),0);
+    }
+
+    function close(){
+        modal.hidden=true;
+        modal.setAttribute('aria-hidden','true');
+        document.body.classList.remove('modal-open');
+    }
+
+    button.addEventListener('click',open);
+
+    confirmBtn.addEventListener('click',()=>{
+        hiddenInput.value='1';
+        if(fileInput)fileInput.value='';
+        close();
+        form.submit();
+    });
+
+    modal.querySelectorAll('[data-modal-close]').forEach(el=>el.addEventListener('click',close));
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)close();});
+}
+
+function initDeleteModals(){
+    const modal=$('#deleteConfirmModal'),confirmBtn=$('#deleteModalConfirm');if(!modal||!confirmBtn)return;let pending=null;
+    const open=t=>{pending=t;const label=t.dataset.deleteLabel||'este item';$('#deleteModalTitle')?.replaceChildren(document.createTextNode('Tem certeza?'));$('#deleteModalText')?.replaceChildren(document.createTextNode(`Você realmente deseja excluir ${label}? Esta ação não pode ser desfeita.`));modal.hidden=false;modal.setAttribute('aria-hidden','false');document.body.classList.add('modal-open');setTimeout(()=>confirmBtn.focus(),0);};
+    const close=()=>{modal.hidden=true;modal.setAttribute('aria-hidden','true');pending=null;document.body.classList.remove('modal-open');};
+    document.addEventListener('click',e=>{const t=e.target.closest('.btn-action.delete, .comment-delete');if(!t)return;e.preventDefault();e.stopPropagation();open(t);});
+    confirmBtn.addEventListener('click',()=>{if(!pending)return;const t=pending,f=t.form||t.closest('form');if(t.dataset.ajaxDelete==='comment'&&f){window.dispatchEvent(new CustomEvent('ysa:comment-delete-confirmed',{detail:{form:f}}));close();return;}if(t.tagName==='A'&&t.href){close();location.href=t.href;return;}if(f){close();f.submit();}});
+    modal.querySelectorAll('[data-modal-close]').forEach(el=>el.addEventListener('click',close));document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)close();});
+}
+
+function initCommentsAjax(){
+    const form=$('#commentForm'),list=$('#commentsList'),count=$('#commentsCount');if(!form||!list)return;
+    const base=(document.documentElement.dataset.baseUrl||'').replace(/\/$/,'');const csrf=$('meta[name="csrf-token"]')?.content||form.querySelector('[name="csrf"]')?.value||'';
+    const post=async body=>{const r=await fetch(`${base}/api/comentarios.php`,{method:'POST',credentials:'same-origin',headers:{'Accept':'application/json','X-CSRF-TOKEN':csrf,'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body});const d=await r.json().catch(()=>({ok:false,message:'Resposta inválida.'}));if(!r.ok||!d.ok)throw new Error(d.message||'Não foi possível concluir.');return d;};
+    const avatar=(photo,name)=>{if(photo){const i=document.createElement('img');i.className='comment-avatar avatar-image';i.src=`${base}/${String(photo).replace(/^\//,'')}`;i.alt=`Foto de ${name}`;return i;}const d=document.createElement('div');d.className='comment-avatar avatar-fallback';d.textContent=String(name||'?').trim().slice(0,1).toUpperCase();return d;};
+    const changeCount=n=>{if(count)count.textContent=String(Math.max(0,(parseInt(count.textContent,10)||0)+n));};
+    const build=c=>{const a=document.createElement('article');a.className='comment-card reveal visible';a.dataset.commentId=c.id;a.appendChild(avatar(c.foto,c.nome));const content=document.createElement('div');content.className='comment-content';const meta=document.createElement('div');meta.className='comment-meta';const name=document.createElement('strong');name.textContent=c.nome;meta.appendChild(name);if(c.tipo==='admin'){const b=document.createElement('span');b.className='comment-badge';b.textContent='ADMIN';meta.appendChild(b);}const time=document.createElement('time');time.textContent=c.criado_em;meta.appendChild(time);content.appendChild(meta);const p=document.createElement('p');String(c.texto).split(/\n/).forEach((line,i)=>{if(i)p.appendChild(document.createElement('br'));p.appendChild(document.createTextNode(line));});content.appendChild(p);const f=document.createElement('form');f.method='post';const hid=document.createElement('input');hid.type='hidden';hid.name='comment_id';hid.value=String(c.id);f.appendChild(hid);const b=document.createElement('button');b.type='submit';b.className='btn-action delete comment-delete';b.dataset.deleteLabel='este comentário';b.dataset.ajaxDelete='comment';b.textContent='Excluir comentário';f.appendChild(b);content.appendChild(f);a.appendChild(content);return a;};
+    form.addEventListener('submit',async e=>{e.preventDefault();const ta=form.querySelector('textarea[name="texto"]'),btn=form.querySelector('button[type="submit"]');const text=(ta?.value||'').trim();if(text.length<2){ta?.focus();return;}const old=btn?.textContent||'Comentar';if(btn){btn.disabled=true;btn.textContent='Enviando…';}try{const d=await post(new URLSearchParams({action:'add',episode_id:form.querySelector('[name="episode_id"]')?.value||new URLSearchParams(location.search).get('ep')||'',texto:text,csrf}).toString());$('#commentsEmpty')?.remove();list.insertBefore(build(d.comment),list.firstChild);changeCount(1);if(ta)ta.value='';}catch(err){alert(err.message);}finally{if(btn){btn.disabled=false;btn.textContent=old;}}});
+    window.addEventListener('ysa:comment-delete-confirmed',async e=>{const f=e.detail?.form;if(!f||!list.contains(f))return;const id=f.querySelector('[name="comment_id"]')?.value||'',a=f.closest('[data-comment-id]');try{await post(new URLSearchParams({action:'delete',comment_id:id,csrf}).toString());a?.classList.add('removing');setTimeout(()=>a?.remove(),160);changeCount(-1);setTimeout(()=>{if(!list.querySelector('.comment-card')&&!list.querySelector('#commentsEmpty')){const d=document.createElement('div');d.className='empty-state';d.id='commentsEmpty';d.textContent='Ainda não há comentários. Seja o primeiro a comentar.';list.appendChild(d);}},170);}catch(err){alert(err.message);}});
+}
+function initEpisodePreview(){
+    const form=$('#episodeForm');
+    if(!form)return;
+    const season=$('#episodeSeason'),number=$('#episodeNumber'),title=$('#episodeTitle'),description=$('#episodeDescription'),thumb=$('#episodeThumb'),video=$('#episodeVideo'),videoType=$('#episodeVideoType'),featured=$('#episodeFeatured');
+    const pThumb=$('#previewThumb'),pNumber=$('#previewNumber'),pTitle=$('#previewTitle'),pDescription=$('#previewDescription'),pAnime=$('#previewAnime'),pFeatured=$('#previewFeatured'),pVideo=$('#previewVideo'),pYoutube=$('#previewYoutube'),pEmpty=$('#previewVideoEmpty'),pStatus=$('#previewVideoStatus');
+    const label=$('#episodeVideoLabel'),hint=$('#episodeVideoHint');
+    const base=(document.documentElement.dataset.baseUrl||'').replace(/\/$/,'');
+    const toUrl=value=>{value=(value||'').trim();if(!value)return '';if(/^https?:\/\//i.test(value))return value;value=value.replace(/\\/g,'/').replace(/^\//,'');return base+'/'+value;};
+    const youtubeId=value=>{
+        value=(value||'').trim();
+        if(/^[A-Za-z0-9_-]{11}$/.test(value))return value;
+        try{
+            const u=new URL(value);
+            const host=u.hostname.toLowerCase();
+            if(host==='youtu.be'||host.endsWith('.youtu.be')){const id=u.pathname.split('/').filter(Boolean)[0]||'';return /^[A-Za-z0-9_-]{11}$/.test(id)?id:'';}
+            if(host.includes('youtube.com')){
+                const v=u.searchParams.get('v')||'';
+                if(/^[A-Za-z0-9_-]{11}$/.test(v))return v;
+                const parts=u.pathname.split('/').filter(Boolean);
+                const index=parts.findIndex(x=>['embed','shorts','live'].includes(x));
+                if(index>=0){const id=parts[index+1]||'';return /^[A-Za-z0-9_-]{11}$/.test(id)?id:'';}
+            }
+        }catch(_){ }
+        return '';
+    };
+    function updateTypeLabels(){
+        const type=videoType?.value||'youtube';
+        if(type==='youtube'){
+            if(label)label.textContent='ID / URL do YouTube';
+            if(hint)hint.textContent='Cole o link do YouTube ou informe o ID. O sistema salva somente o ID no banco.';
+            if(video)video.placeholder='abc123XYZ01 ou https://www.youtube.com/watch?v=abc123XYZ01';
+        }else if(type==='hls'){
+            if(label)label.textContent='URL do stream HLS';
+            if(hint)hint.textContent='Informe a URL .m3u8 do stream.';
+            if(video)video.placeholder='https://exemplo.com/video/master.m3u8';
+        }else{
+            if(label)label.textContent='URL / caminho do MP4';
+            if(hint)hint.textContent='Para arquivo local, use assets/video/nome-do-arquivo.mp4.';
+            if(video)video.placeholder='assets/video/episodio.mp4';
+        }
+    }
+    function update(){
+        const opt=season?.options[season.selectedIndex];
+        const seasonNumber=opt?.dataset.season||'';
+        const animeName=opt?.dataset.anime||'';
+        pAnime.textContent=animeName?`${animeName}${seasonNumber?` • S${String(seasonNumber).padStart(2,'0')}`:''}`:'Selecione um anime/temporada';
+        pNumber.textContent='E'+String(number?.value||1).padStart(2,'0');
+        pTitle.textContent=title?.value.trim()||'Título do episódio';
+        pDescription.textContent=description?.value.trim()||'A descrição do episódio aparecerá aqui.';
+        pFeatured.hidden=!featured?.checked;
+        const thumbUrl=toUrl(thumb?.value)||`${base}/assets/img/anime/generic.svg`;
+        pThumb.src=thumbUrl;pThumb.onerror=()=>{pThumb.src=`${base}/assets/img/anime/generic.svg`;};
+        pVideo.pause();pVideo.removeAttribute('src');pVideo.load();
+        if(pYoutube){pYoutube.hidden=true;pYoutube.removeAttribute('src');}
+        const type=videoType?.value||'youtube';
+        const raw=(video?.value||'').trim();
+        if(!raw){pVideo.style.display='none';pYoutube?.setAttribute('hidden','');pEmpty.style.display='grid';pEmpty.textContent='Informe um vídeo para testar a prévia.';pStatus.textContent='Nenhum vídeo informado';return;}
+        if(type==='youtube'){
+            const id=youtubeId(raw);
+            pVideo.style.display='none';
+            if(id&&pYoutube){
+                pYoutube.src=`https://www.youtube.com/embed/${encodeURIComponent(id)}?enablejsapi=1&playsinline=1&rel=0`;
+                pYoutube.hidden=false;pEmpty.style.display='none';pStatus.textContent=`YouTube • ${id}`;
+            }else{
+                pYoutube?.setAttribute('hidden','');pEmpty.style.display='grid';pEmpty.textContent='ID ou URL do YouTube inválido.';pStatus.textContent='YouTube inválido';
+            }
+            return;
+        }
+        if(type==='hls'){
+            pVideo.style.display='none';pEmpty.style.display='grid';pEmpty.textContent='HLS (.m3u8) será reproduzido na página do episódio.';pStatus.textContent='HLS (.m3u8)';return;
+        }
+        const videoUrl=toUrl(raw);
+        if(!videoUrl){pVideo.style.display='none';pEmpty.style.display='grid';pStatus.textContent='URL inválida';return;}
+        pVideo.src=videoUrl;pVideo.style.display='block';pEmpty.style.display='none';pStatus.textContent='MP4 carregado';
+    }
+    [season,number,title,description,thumb,video,videoType,featured].forEach(el=>el&&el.addEventListener(el===featured||el===season||el===videoType?'change':'input',update));
+    videoType?.addEventListener('change',updateTypeLabels);
+    updateTypeLabels();update();
+}
+
+
+document.addEventListener('DOMContentLoaded',()=>{initMenu();initReveal();initParticles();initPlayer();initHeroSlider();initToast();initEpisodePreview();initEpisodePicker();initPasswordToggles();initSearch();initProfilePhotoPreview();initRemovePhotoModal();initDeleteModals();initCommentsAjax();initSeasonSwitcher();});
+
+/* =========================================================
+   TEMPORADAS — troca instantânea sem recarregar a página
+========================================================= */
+function initSeasonSwitcher(){
+    const root = document.querySelector('#animeSeasons');
+    if(!root) return;
+
+    const trigger = root.querySelector('#seasonPickerTrigger');
+    const menu = root.querySelector('#seasonPickerMenu');
+    const currentTitle = root.querySelector('#seasonPickerCurrent');
+    const currentCount = root.querySelector('#seasonPickerCount');
+    const options = [...root.querySelectorAll('.season-option')];
+    const panels = [...root.querySelectorAll('[data-season-panel]')];
+    if(!trigger || !menu || !currentTitle || !currentCount || !options.length) return;
+
+    const baseUrl = root.dataset.baseUrl || window.location.href;
+
+    function closeMenu(){
+        menu.hidden = true;
+        trigger.setAttribute('aria-expanded','false');
+    }
+
+    function openMenu(){
+        menu.hidden = false;
+        trigger.setAttribute('aria-expanded','true');
+    }
+
+    function updateUrl(seasonId, replace=false){
+        const url = new URL(baseUrl, window.location.href);
+        url.searchParams.set('temporada', String(seasonId));
+        const method = replace ? 'replaceState' : 'pushState';
+        window.history[method]({seasonId}, '', url.href);
+    }
+
+    function selectSeason(seasonId, pushHistory=true){
+        const selected = options.find(option => Number(option.dataset.seasonId) === Number(seasonId));
+        if(!selected) return;
+
+        options.forEach(option => {
+            const active = option === selected;
+            option.classList.toggle('active', active);
+            option.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+
+        panels.forEach(panel => {
+            const active = Number(panel.dataset.seasonPanel) === Number(seasonId);
+            panel.hidden = !active;
+            panel.classList.toggle('is-active', active);
+        });
+
+        currentTitle.textContent = selected.dataset.seasonTitle || selected.textContent.trim();
+        currentCount.textContent = `${selected.dataset.seasonCount || '0'} Episódios`;
+        closeMenu();
+
+        if(pushHistory){
+            updateUrl(seasonId);
+        }
+
+        const activePanel = panels.find(panel => Number(panel.dataset.seasonPanel) === Number(seasonId));
+        activePanel?.scrollIntoView({behavior:'auto', block:'start'});
+    }
+
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+        if(menu.hidden) openMenu(); else closeMenu();
+    });
+
+    options.forEach(option => {
+        option.addEventListener('click', () => {
+            selectSeason(Number(option.dataset.seasonId), true);
+        });
+    });
+
+    document.addEventListener('click', event => {
+        if(!root.contains(event.target)) closeMenu();
+    });
+
+    document.addEventListener('keydown', event => {
+        if(event.key === 'Escape') closeMenu();
+    });
+
+    window.addEventListener('popstate', () => {
+        const url = new URL(window.location.href);
+        const seasonId = Number(url.searchParams.get('temporada') || 0);
+        const fallback = Number(options[0]?.dataset.seasonId || 0);
+        selectSeason(seasonId || fallback, false);
+    });
+}
+
+/* =========================================================
+   MENU DA ÁREA ADMINISTRATIVA
+========================================================= */
+function initAdminSidebar(){
+    const toggle = document.querySelector('#adminSidebarToggle');
+    const sidebar = document.querySelector('#adminSidebar');
+    const backdrop = document.querySelector('#adminSidebarBackdrop');
+    if(!toggle || !sidebar || !backdrop) return;
+
+    function close(){
+        sidebar.classList.remove('open');
+        backdrop.classList.remove('open');
+        toggle.setAttribute('aria-expanded','false');
+    }
+
+    function open(){
+        sidebar.classList.add('open');
+        backdrop.classList.add('open');
+        toggle.setAttribute('aria-expanded','true');
+    }
+
+    toggle.addEventListener('click', ()=> sidebar.classList.contains('open') ? close() : open());
+    backdrop.addEventListener('click', close);
+    sidebar.querySelectorAll('a').forEach(link => link.addEventListener('click', close));
+    document.addEventListener('keydown', event => {
+        if(event.key === 'Escape') close();
+    });
+}
+
+document.addEventListener('DOMContentLoaded', initAdminSidebar);
+
+/* =========================================================
+   YSA — CARROSSEL PRINCIPAL
+========================================================= */
+function initHeroSlider(){
+    const root = document.getElementById('ysaHeroSlider');
+    if(!root) return;
+
+    const slides = [...root.querySelectorAll('.ysa-hero-slide')];
+    const dots = [...root.querySelectorAll('.ysa-hero-dot')];
+    const prev = root.querySelector('.ysa-hero-prev');
+    const next = root.querySelector('.ysa-hero-next');
+    if(slides.length < 2) return;
+
+    let current = 0;
+    let timer = null;
+    const interval = 7000;
+
+    const render = (index) => {
+        current = (index + slides.length) % slides.length;
+        slides.forEach((slide, i) => slide.classList.toggle('is-active', i === current));
+        dots.forEach((dot, i) => dot.classList.toggle('is-active', i === current));
+    };
+
+    const stop = () => {
+        if(timer){ clearInterval(timer); timer = null; }
+    };
+
+    const start = () => {
+        stop();
+        timer = setInterval(() => render(current + 1), interval);
+    };
+
+    prev?.addEventListener('click', () => { render(current - 1); start(); });
+    next?.addEventListener('click', () => { render(current + 1); start(); });
+    dots.forEach((dot, i) => dot.addEventListener('click', () => { render(i); start(); }));
+
+    root.addEventListener('mouseenter', stop);
+    root.addEventListener('mouseleave', start);
+    root.addEventListener('focusin', stop);
+    root.addEventListener('focusout', (event) => {
+        if(!root.contains(event.relatedTarget)) start();
+    });
+
+    let touchStartX = null;
+    root.addEventListener('touchstart', e => {
+        touchStartX = e.changedTouches?.[0]?.clientX ?? null;
+        stop();
+    }, {passive:true});
+    root.addEventListener('touchend', e => {
+        if(touchStartX === null) return;
+        const endX = e.changedTouches?.[0]?.clientX ?? touchStartX;
+        const delta = endX - touchStartX;
+        if(Math.abs(delta) > 45){
+            render(delta < 0 ? current + 1 : current - 1);
+        }
+        touchStartX = null;
+        start();
+    }, {passive:true});
+
+    document.addEventListener('keydown', e => {
+        if(!root.matches(':hover') && document.activeElement && !root.contains(document.activeElement)) return;
+        if(e.key === 'ArrowLeft'){ e.preventDefault(); render(current - 1); start(); }
+        if(e.key === 'ArrowRight'){ e.preventDefault(); render(current + 1); start(); }
+    });
+
+    render(0);
+    start();
+}
+
+
+/* =========================================================
+   YSA — CARROSSEL DE CARDS DE ANIME
+   Modelo baseado no arquivo de teste aprovado.
+   O arraste é exclusivamente horizontal.
+========================================================= */
+function initAnimeCardCarousels(){
+    document.querySelectorAll('.carousel-shell').forEach((shell) => {
+        const viewport = shell.querySelector('.carousel-viewport');
+        const track = shell.querySelector('.carousel-track');
+        const prevButton = shell.querySelector('.carousel-arrow.prev');
+        const nextButton = shell.querySelector('.carousel-arrow.next');
+
+        if(!viewport || !track) return;
+
+        const originalCards = Array.from(track.children)
+            .filter((el) => el.classList.contains('anime-card'));
+
+        const originalCount = originalCards.length;
+
+        if(originalCount <= 1) return;
+
+        let infiniteActive = false;
+        let rebuilding = false;
+        let pointerDown = false;
+        let dragAxis = null;
+        let startX = 0;
+        let startY = 0;
+        let startScroll = 0;
+        let suppressClick = false;
+        let dragDistance = 0;
+        let lastScrollLeft = 0;
+        let lastIntent = 0;
+
+        const getStep = () => {
+            const card = track.querySelector('.anime-card');
+            if(!card) return 0;
+
+            const style = getComputedStyle(track);
+            const gap = parseFloat(style.columnGap || style.gap || '0') || 0;
+
+            return card.getBoundingClientRect().width + gap;
+        };
+
+        const getLoopWidth = () => getStep() * originalCount;
+
+        // Os cards usam links <a> normais. Não interceptamos o clique para
+        // que o navegador possa navegar normalmente quando não houve arraste.
+
+        const activateInfinite = () => {
+            if(infiniteActive || rebuilding) return;
+
+            const loopWidth = getLoopWidth();
+            if(!loopWidth) return;
+
+            rebuilding = true;
+
+            const before = document.createDocumentFragment();
+            const after = document.createDocumentFragment();
+
+            originalCards.forEach((card) => {
+                const cloneBefore = card.cloneNode(true);
+                cloneBefore.dataset.carouselClone = 'before';
+                before.appendChild(cloneBefore);
+
+                const cloneAfter = card.cloneNode(true);
+                cloneAfter.dataset.carouselClone = 'after';
+                after.appendChild(cloneAfter);
+            });
+
+            const currentScroll = viewport.scrollLeft;
+
+            track.insertBefore(before, track.firstChild);
+            track.appendChild(after);
+
+            infiniteActive = true;
+
+            // Mantém exatamente o mesmo conteúdo aparecendo na tela.
+            viewport.scrollLeft = currentScroll + loopWidth;
+            lastScrollLeft = viewport.scrollLeft;
+
+            rebuilding = false;
+        };
+
+        const deactivateInfinite = () => {
+            if(!infiniteActive || rebuilding) return;
+
+            rebuilding = true;
+
+            track.querySelectorAll('[data-carousel-clone]').forEach((clone) => {
+                clone.remove();
+            });
+
+            infiniteActive = false;
+            viewport.scrollLeft = 0;
+            lastScrollLeft = 0;
+            lastIntent = 0;
+
+            rebuilding = false;
+        };
+
+        const move = (direction) => {
+            const step = getStep();
+            if(!step) return;
+
+            lastIntent = direction;
+
+            // O primeiro clique/uso do carrossel transforma a fileira em infinita.
+            if(!infiniteActive){
+                activateInfinite();
+            }
+
+            viewport.scrollBy({
+                left: step * 3 * direction,
+                behavior: 'smooth'
+            });
+        };
+
+        prevButton?.addEventListener('click', () => move(-1));
+        nextButton?.addEventListener('click', () => move(1));
+
+        viewport.addEventListener('scroll', () => {
+            if(!infiniteActive || rebuilding) return;
+
+            const loopWidth = getLoopWidth();
+            if(!loopWidth) return;
+
+            const current = viewport.scrollLeft;
+            const scrollingLeft = current < lastScrollLeft;
+            const scrollingRight = current > lastScrollLeft;
+
+            // Voltou ao primeiro card real: encerra o infinito e volta ao estado inicial.
+            if(
+                (scrollingLeft || lastIntent < 0) &&
+                current <= loopWidth + 1
+            ){
+                deactivateInfinite();
+                return;
+            }
+
+            // Passou do último conjunto: continua pelo primeiro conjunto.
+            if(current >= (loopWidth * 2) - 1){
+                rebuilding = true;
+                viewport.scrollLeft = current - loopWidth;
+                rebuilding = false;
+            }
+
+            lastScrollLeft = viewport.scrollLeft;
+        }, {passive:true});
+
+        viewport.addEventListener('wheel', (event) => {
+            if(Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+
+            event.preventDefault();
+            lastIntent = event.deltaY > 0 ? 1 : -1;
+
+            if(!infiniteActive){
+                activateInfinite();
+            }
+
+            viewport.scrollLeft += event.deltaY;
+        }, {passive:false});
+
+        /* ==========================================
+           ARRASTE — SOMENTE HORIZONTAL
+        ========================================== */
+        viewport.addEventListener('pointerdown', (event) => {
+            if(event.pointerType === 'mouse' && event.button !== 0) return;
+
+            pointerDown = true;
+            dragAxis = null;
+            startX = event.clientX;
+            startY = event.clientY;
+            startScroll = viewport.scrollLeft;
+            suppressClick = false;
+            dragDistance = 0;
+
+        });
+
+        viewport.addEventListener('pointermove', (event) => {
+            if(!pointerDown) return;
+
+            const dx = event.clientX - startX;
+            const dy = event.clientY - startY;
+
+            if(
+                dragAxis === null &&
+                (Math.abs(dx) > 8 || Math.abs(dy) > 8)
+            ){
+                dragAxis =
+                    Math.abs(dx) > Math.abs(dy)
+                        ? 'horizontal'
+                        : 'vertical';
+
+                if(dragAxis === 'horizontal'){
+                    activateInfinite();
+                    startScroll = viewport.scrollLeft;
+                }
+            }
+
+            if(dragAxis !== 'horizontal') return;
+
+            dragDistance = Math.abs(dx);
+            suppressClick = dragDistance > 10;
+            track.classList.add('is-dragging');
+
+            const direction = dx < 0 ? 1 : -1;
+            lastIntent = direction;
+
+            event.preventDefault();
+            viewport.scrollLeft = startScroll - dx;
+        });
+
+        const finish = (event) => {
+            if(!pointerDown) return;
+
+            pointerDown = false;
+            dragAxis = null;
+            track.classList.remove('is-dragging');
+
+
+            window.setTimeout(() => {
+                suppressClick = false;
+                dragDistance = 0;
+            }, 50);
+        };
+
+        viewport.addEventListener('pointerup', finish);
+        viewport.addEventListener('pointercancel', finish);
+
+        viewport.addEventListener('click', (event) => {
+            if(suppressClick){
+                event.preventDefault();
+                event.stopPropagation();
+                suppressClick = false;
+                dragDistance = 0;
+            }
+        }, true);
+
+        window.addEventListener('blur', () => {
+            pointerDown = false;
+            dragAxis = null;
+            track.classList.remove('is-dragging');
+        });
+
+        bindCardLinks();
+
+        // Estado inicial: primeiro card na posição original e sem clones.
+        viewport.scrollLeft = 0;
+        lastScrollLeft = 0;
+    });
+}
+document.addEventListener('DOMContentLoaded', initAnimeCardCarousels);

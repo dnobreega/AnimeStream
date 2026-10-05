@@ -1,0 +1,11 @@
+<?php
+require __DIR__.'/../includes/bootstrap.php'; $token=(string)($_GET['token']??$_POST['token']??''); $error=null; $done=false;
+if($_SERVER['REQUEST_METHOD']==='POST'){
+    $senha=(string)($_POST['senha']??''); $confirm=(string)($_POST['confirm']??'');
+    if(!verify_csrf($_POST['csrf']??null)) $error='Formulário inválido.'; elseif(strlen($senha)<8) $error='A senha deve ter pelo menos 8 caracteres.'; elseif($senha!==$confirm) $error='As senhas não coincidem.';
+    else { $stmt=db()->prepare('SELECT tr.*, tr.id AS reset_id, u.id AS usuario_id FROM tokens_recuperacao tr INNER JOIN usuarios u ON u.id=tr.usuario_id WHERE tr.token_hash=? AND tr.expira_em>=NOW() LIMIT 1'); $stmt->execute([hash('sha256',$token)]); $row=$stmt->fetch(); if(!$row) $error='Token inválido ou expirado.'; else { db()->prepare('UPDATE usuarios SET senha=?,senha_criptografada=? WHERE id=?')->execute([password_hash($senha,PASSWORD_DEFAULT),encrypt_password_for_admin($senha),(int)$row['id']]); db()->prepare('DELETE FROM tokens_recuperacao WHERE id=?')->execute([(int)$row['reset_id']]); $done=true; } }
+}
+$pageTitle='Nova senha'; require __DIR__.'/../includes/header.php';
+?>
+<main class="auth-page"><div class="auth-card reveal"><span class="section-kicker">NOVA SENHA</span><h1>Redefinir</h1><?php if($error): ?><div class="alert error"><?= e($error) ?></div><?php elseif($done): ?><div class="alert success">Senha alterada. <a href="<?= e(url('pages/login.php')) ?>">Entrar</a></div><?php else: ?><form method="post" class="form-stack"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="token" value="<?= e($token) ?>"><label>Nova senha<div class="password-field"><input id="resetPassword" type="password" name="senha" minlength="8" required><button type="button" class="password-toggle" data-target="resetPassword">Mostrar</button></div></label><label>Confirmar senha<div class="password-field"><input id="resetConfirm" type="password" name="confirm" minlength="8" required><button type="button" class="password-toggle" data-target="resetConfirm">Mostrar</button></div></label><button class="btn btn-primary">Salvar senha</button></form><?php endif; ?></div></main>
+<?php require __DIR__.'/../includes/footer.php'; ?>

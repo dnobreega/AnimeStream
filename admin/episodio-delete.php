@@ -1,0 +1,1 @@
+<?php require __DIR__.'/../includes/bootstrap.php'; require_admin(); $id=(int)($_GET['id']??0); if($id) db()->prepare('DELETE FROM episodios WHERE id=?')->execute([$id]); flash('success','Episódio excluído.'); redirect('admin/episodios.php');

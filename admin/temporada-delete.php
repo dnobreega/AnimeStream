@@ -1,0 +1,1 @@
+<?php require __DIR__.'/../includes/bootstrap.php'; require_admin(); $id=(int)($_GET['id']??0); if($id){ try{ db()->prepare('DELETE FROM temporadas WHERE id=?')->execute([$id]); flash('success','Temporada excluída.'); }catch(Throwable $e){ flash('error','Não foi possível excluir. Verifique se existem episódios vinculados.'); }} redirect('admin/temporadas.php');
